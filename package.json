@@ -2,7 +2,7 @@
   "name": "house-of-mercy-content-hub",
   "version": "2.0.0",
   "private": true,
-  "description": "Shared House of Mercy workspace with per-user accounts, roles, invitations and activity history.",
+  "description": "Shared House of Mercy workspace with per-user accounts, roles and activity history.",
   "scripts": { "start": "node server.js", "test": "node test.js" },
   "engines": { "node": ">=22.5" }
 }
