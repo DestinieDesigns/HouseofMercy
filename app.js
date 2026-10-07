@@ -134,5 +134,116 @@
   window.addEventListener('hashchange',()=>{activeView=location.hash.slice(1)||'overview';render()});
   document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
   document.getElementById('csv-file').addEventListener('change',e=>{if(e.target.files[0])beginCSV(e.target.files[0]);e.target.value=''});
+
+  function showAuth(info={}) {
+    clearInterval(pollTimer); ctx.me=null; ctx.workspace=null;
+    document.querySelector('.app-shell').style.display='none'; closeModal();
+    let root=document.getElementById('auth-root');
+    if(!root){root=document.createElement('div');root.id='auth-root';document.body.append(root)}
+    root.innerHTML=`<div class="auth-screen"><section class="auth-card"><span class="brand-mark">H<span>o</span>M</span><p class="eyebrow">HOUSE OF MERCY CONTENT HUB</p><h1>Welcome to House of Mercy</h1><p class="auth-sub">Sign in with your username and password to enter the shared workspace.</p>${info.error?`<div class="notice auth-error">${esc(info.error)}</div>`:''}${info.forgot?'<div class="notice">Please contact a House of Mercy Admin to reset your password.</div>':''}<form id="username-login-form"><div class="field"><label>Username</label><input name="username" required maxlength="30" autocomplete="username"></div><div class="field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div><button class="button button-primary auth-submit">Sign In</button></form><button class="text-button" data-action="forgot-password">Forgot Password?</button></section></div>`;
+  }
+  function showPasswordSetup() {
+    clearInterval(pollTimer);
+    const root=document.getElementById('auth-root')||document.body.appendChild(Object.assign(document.createElement('div'),{id:'auth-root'}));
+    document.querySelector('.app-shell').style.display='none';
+    root.innerHTML=`<div class="auth-screen"><section class="auth-card"><span class="brand-mark">H<span>o</span>M</span><h1>Welcome to House of Mercy</h1><p class="auth-sub">Before you continue, please create your own password.</p><form id="password-setup-form"><div class="field"><label>New Password</label><input name="newPassword" type="password" required minlength="8" maxlength="200" autocomplete="new-password"></div><div class="field"><label>Confirm New Password</label><input name="confirmPassword" type="password" required minlength="8" maxlength="200" autocomplete="new-password"></div><div id="password-setup-error" class="notice" hidden></div><button class="button button-primary auth-submit">Create Password</button></form><button class="text-button" data-action="logout">Sign Out</button></section></div>`;
+  }
+  function showNoWorkspace() {
+    document.querySelector('.app-shell').style.display='none';
+    let root=document.getElementById('auth-root');
+    if(!root){root=document.createElement('div');root.id='auth-root';document.body.append(root)}
+    root.innerHTML=`<div class="auth-screen"><section class="auth-card"><span class="brand-mark">H<span>o</span>M</span><h1>No workspace access</h1><p class="auth-sub">Your account is not a member of the House of Mercy workspace. Please contact a House of Mercy Admin.</p><button class="button button-primary auth-submit" data-action="logout">Sign Out</button></section></div>`;
+  }
+  async function enter() {
+    try {
+      const me=await api('/me'); ctx.me=me.user; ctx.workspaces=me.workspaces;
+      if(me.user.passwordRequiresChange){showPasswordSetup();return}
+      if(!me.workspaces.length){showNoWorkspace();return}
+      const saved=localStorage.getItem('hom-workspace'),w=me.workspaces.find(x=>x.id===saved)||me.workspaces[0];
+      ctx.workspace={id:w.id,name:w.name};lastRemote='';await loadRemote();
+      document.getElementById('auth-root')?.remove();document.querySelector('.app-shell').style.display='';
+      render();startPolling();
+    } catch(e) { if(e.status===401)showAuth();else toast(e.message) }
+  }
+  async function boot() {
+    try { const me=await api('/me');ctx.me=me.user;ctx.workspaces=me.workspaces;await enter() }
+    catch(e) { if(e.status===401)showAuth();else showAuth({error:e.message}) }
+  }
+  function renderTeam() {
+    const admin=isAdmin();
+    const rows=state.members.map(m=>`<tr><td>${esc(m.name)}${m.id===ctx.me.id?' <span class="mini-tag gray">You</span>':''}</td><td>${esc(m.username)}</td><td>${admin?`<select class="role-select" data-role-id="${esc(m.id)}" aria-label="Role for ${esc(m.name)}">${['Admin','Editor','Contributor'].map(r=>`<option ${m.role===r?'selected':''}>${r}</option>`).join('')}</select>`:esc(m.role)}</td><td>${esc(m.status||'Active')}</td><td>${admin?`<div class="team-actions"><button class="small-action" data-action="edit-member" data-id="${esc(m.id)}">Edit</button><button class="small-action" data-action="reset-member-password" data-id="${esc(m.id)}">Reset Password</button>${m.status==='Suspended'?`<button class="small-action" data-action="reactivate-member" data-id="${esc(m.id)}">Reactivate</button>`:`<button class="small-action" data-action="suspend-member" data-id="${esc(m.id)}">Suspend</button>`}<button class="small-action" data-action="remove-member-account" data-id="${esc(m.id)}">Remove</button></div>`:'—'}</td></tr>`).join('');
+    return `${heading('Team','Manage House of Mercy accounts and workspace access.',admin?button('Create Account','create-account',true,'＋'):'')}<section class="panel"><div class="panel-header"><div><h2 class="section-title">Team Members</h2><p class="section-subtitle">${state.members.length} member${state.members.length===1?'':'s'}</p></div></div><div class="panel-body team-table-wrap"><table class="content-table"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows||'<tr><td colspan="5">No team members.</td></tr>'}</tbody></table></div></section><div class="team-grid" style="margin-top:15px"><section class="panel"><div class="panel-header"><h2 class="section-title">Admin</h2></div><div class="panel-body"><ul class="permission-list"><li>Create and manage accounts, roles, and workspace settings</li><li>Manage all House of Mercy content</li></ul></div></section><section class="panel"><div class="panel-header"><h2 class="section-title">Editor & Contributor</h2></div><div class="panel-body"><ul class="permission-list"><li>Editors create/edit content, manage ideas, calendar, comments and assignments</li><li>Contributors create ideas, comment, and update assigned work</li></ul></div></section></div><section class="panel" style="margin-top:15px"><div class="panel-header"><div><h2 class="section-title">Assigned work</h2><p class="section-subtitle">Who is working on what</p></div></div><div class="panel-body">${state.members.map(m=>({m,w:workOf(m.id)})).filter(x=>x.w.length).map(({m,w})=>`<div class="list-row"><span class="avatar">${esc(ini(m.name))}</span><div class="list-row-content"><strong>${esc(m.name)}</strong><small>${w.map(x=>`${esc(x.title)} (${esc(x.label)})`).join(' · ')}</small></div></div>`).join('')||'<div class="empty-inline">Nothing is assigned yet.</div>'}</div></section><section class="panel" style="margin-top:15px"><div class="panel-header"><h2 class="section-title">Recent activity</h2></div><div class="panel-body">${recentActivity(30)}</div></section>`;
+  }
+  function renderSettings() {
+    return `${heading('Settings','Manage your security and workspace preferences.')}<section class="panel"><div class="panel-header"><div><h2 class="section-title">Security</h2><p class="section-subtitle">Your password is securely hashed and never displayed.</p></div></div><div class="panel-body"><div class="settings-row"><div><strong>Change Password</strong><p>Update your password at any time.</p></div>${button('Change Password','change-password')}</div></div></section><section class="panel" style="margin-top:15px"><div class="panel-header"><div><h2 class="section-title">Workspace preferences</h2><p class="section-subtitle">Shared with everyone in this workspace</p></div></div><div class="panel-body"><div class="settings-row"><div><strong>Workspace name</strong><p>${esc(ctx.workspace?.name||'')}</p></div>${isAdmin()?button('Rename','rename-workspace'):'<span class="mini-tag">WORKSPACE</span>'}</div><div class="settings-row"><div><strong>Notifications</strong><p>Get reminders for upcoming items and activity.</p></div><button class="switch ${state.settings.notifications?'on':''}" ${isAdmin()?'':'disabled'} data-action="toggle-notifications" aria-label="Toggle notifications"></button></div>${isAdmin()?`<div class="settings-row"><div><strong>Export your workspace data</strong><p>Download ideas, reminders, goals, and imported analytics as JSON.</p></div>${button('Download backup','export')}</div>`:''}<div class="notice"><strong>Shared workspace:</strong> Workspace data is available only to signed-in members, subject to their role.</div></div></section>`;
+  }
+  function makeTemporaryPassword() {
+    const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%';
+    const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);
+    return Array.from(bytes,b=>alphabet[b%alphabet.length]).join('');
+  }
+  function showCreateAccount() {
+    showModal('Create Account','Add an account to the shared House of Mercy workspace.',`<form id="create-account-form"><div class="form-grid"><div class="field"><label>First Name</label><input name="firstName" required maxlength="60"></div><div class="field"><label>Last Name</label><input name="lastName" required maxlength="60"></div><div class="field full-width"><label>Username</label><input name="username" required minlength="3" maxlength="30" pattern="[A-Za-z0-9_-]+" autocomplete="off"></div><div class="field full-width"><label>Temporary Password</label><div class="password-generate"><input name="temporaryPassword" type="password" required minlength="8" maxlength="200" autocomplete="new-password"><button class="button" type="button" data-action="generate-password">Generate</button></div></div><div class="field full-width"><label>Role</label><select name="role">${['Admin','Editor','Contributor'].map(r=>`<option ${r==='Contributor'?'selected':''}>${r}</option>`).join('')}</select></div></div><div class="notice">Share the temporary password securely. The new user must change it before accessing the workspace.</div><div class="notice" id="account-form-message" hidden></div><div class="form-footer"><button type="button" class="button" data-action="close-modal">Cancel</button><button class="button button-primary">Create Account</button></div></form>`);
+  }
+  function showResetPassword(memberId) {
+    const member=state.members.find(m=>m.id===memberId);if(!member)return;
+    showModal(`Reset Password · ${esc(member.name)}`,'They will need to choose a new password at their next sign in.',`<form id="reset-password-form" data-id="${esc(memberId)}"><div class="field"><label>Temporary Password</label><div class="password-generate"><input name="temporaryPassword" type="password" required minlength="8" maxlength="200" autocomplete="new-password"><button class="button" type="button" data-action="generate-password">Generate</button></div></div><div class="notice">The user's current password cannot be viewed. Share this temporary password securely.</div><div class="notice" id="reset-form-message" hidden></div><div class="form-footer"><button type="button" class="button" data-action="close-modal">Cancel</button><button class="button button-primary">Reset Password</button></div></form>`);
+  }
+  function showPasswordChange() {
+    showModal('Change Password','Choose a password you have not used before.',`<form id="password-change-form"><div class="field"><label>Current Password</label><input name="currentPassword" type="password" required autocomplete="current-password"></div><div class="field"><label>New Password</label><input name="newPassword" type="password" required minlength="8" maxlength="200" autocomplete="new-password"></div><div class="field"><label>Confirm New Password</label><input name="confirmPassword" type="password" required minlength="8" maxlength="200" autocomplete="new-password"></div><div class="notice" id="password-change-message" hidden></div><div class="form-footer"><button type="button" class="button" data-action="close-modal">Cancel</button><button class="button button-primary">Change Password</button></div></form>`);
+  }
+  document.addEventListener('click',async e=>{
+    const el=e.target.closest('[data-action]');if(!el)return;
+    const {action,id:memberId}=el.dataset;
+    if(action==='logout'){try{await api('/logout',{method:'POST',body:{}})}catch{}showAuth();return}
+    if(action==='forgot-password'){showAuth({forgot:true});return}
+    if(action==='create-account'){showCreateAccount();return}
+    if(action==='generate-password'){const input=el.parentElement.querySelector('input[name="temporaryPassword"]');input.value=makeTemporaryPassword();input.type='text';input.select();return}
+    if(action==='change-password'){showPasswordChange();return}
+    if(action==='edit-member'){const m=state.members.find(x=>x.id===memberId);if(m)showModal('Edit Team Member','Update the name shown in House of Mercy.',`<form id="edit-member-form" data-id="${esc(m.id)}"><div class="field"><label>First Name</label><input name="firstName" required maxlength="60" value="${esc(m.name.split(' ')[0])}"></div><div class="field"><label>Last Name</label><input name="lastName" required maxlength="60" value="${esc(m.name.split(' ').slice(1).join(' '))}"></div><div class="notice" id="edit-member-message" hidden></div><div class="form-footer"><button type="button" class="button" data-action="close-modal">Cancel</button><button class="button button-primary">Save</button></div></form>`);return}
+    if(action==='reset-member-password'){showResetPassword(memberId);return}
+    if(action==='suspend-member'||action==='reactivate-member'){
+      const status=action==='suspend-member'?'Suspended':'Active';
+      if(status==='Suspended'&&!confirm('Suspend this account? Their active sessions will be invalidated.'))return;
+      try{await api(wpath(`/members/${encodeURIComponent(memberId)}/status`),{method:'PATCH',body:{status}});await refresh();toast(status==='Suspended'?'Account suspended':'Account reactivated')}catch(err){toast(err.message)}return
+    }
+    if(action==='remove-member-account'){
+      if(!confirm('Remove this person from House of Mercy? Their account will remain but lose workspace access.'))return;
+      try{await api(wpath(`/members/${encodeURIComponent(memberId)}`),{method:'DELETE'});await refresh();toast('User removed from the workspace')}catch(err){toast(err.message)}return
+    }
+  });
+  document.addEventListener('submit',async e=>{
+    const form=e.target;
+    if(form.id==='username-login-form'){
+      e.preventDefault();const data=Object.fromEntries(new FormData(form).entries());
+      try{await api('/login',{method:'POST',body:data});await enter()}catch(err){showAuth({error:err.message})}
+    }
+    if(form.id==='password-setup-form'){
+      e.preventDefault();const data=Object.fromEntries(new FormData(form).entries()),out=document.getElementById('password-setup-error');
+      if(data.newPassword!==data.confirmPassword){out.hidden=false;out.textContent='Passwords do not match.';return}
+      try{await api('/change-password',{method:'POST',body:data});await enter()}catch(err){out.hidden=false;out.textContent=err.message}
+    }
+    if(form.id==='create-account-form'){
+      e.preventDefault();const data=Object.fromEntries(new FormData(form).entries()),out=document.getElementById('account-form-message');
+      try{await api(wpath('/members'),{method:'POST',body:data});closeModal();await refresh();toast('Account created. Share the temporary password securely.')}catch(err){out.hidden=false;out.textContent=err.message}
+    }
+    if(form.id==='reset-password-form'){
+      e.preventDefault();const data=Object.fromEntries(new FormData(form).entries()),out=document.getElementById('reset-form-message');
+      try{await api(wpath(`/members/${encodeURIComponent(form.dataset.id)}/reset-password`),{method:'POST',body:data});closeModal();await refresh();toast('Temporary password set. Share it securely with the user.')}catch(err){out.hidden=false;out.textContent=err.message}
+    }
+    if(form.id==='password-change-form'){
+      e.preventDefault();const data=Object.fromEntries(new FormData(form).entries()),out=document.getElementById('password-change-message');
+      if(data.newPassword!==data.confirmPassword){out.hidden=false;out.textContent='New passwords do not match.';return}
+      try{await api('/change-password',{method:'POST',body:data});closeModal();toast('Password changed successfully')}catch(err){out.hidden=false;out.textContent=err.message}
+    }
+    if(form.id==='edit-member-form'){
+      e.preventDefault();const data=Object.fromEntries(new FormData(form).entries()),out=document.getElementById('edit-member-message');
+      try{await api(wpath(`/members/${encodeURIComponent(form.dataset.id)}/profile`),{method:'PATCH',body:data});closeModal();await refresh();toast('Team member updated')}catch(err){out.hidden=false;out.textContent=err.message}
+    }
+  });
+  document.addEventListener('change',async e=>{
+    if(!e.target.matches('[data-role-id]'))return;
+    try{await api(wpath(`/members/${encodeURIComponent(e.target.dataset.roleId)}`),{method:'PATCH',body:{role:e.target.value}});await refresh();toast('Role updated')}catch(err){toast(err.message);await refresh()}
+  });
   boot();
 })();
