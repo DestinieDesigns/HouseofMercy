@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#4B0082">
+  <title>House of Mercy Content Hub</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%234B0082'/%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' dominant-baseline='middle' font-family='sans-serif' font-size='17' font-weight='bold' fill='white'%3EH%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#" aria-label="House of Mercy Content Hub home">
+        <span class="brand-mark">H<span>o</span>M</span>
+        <span class="brand-copy"><strong>House of Mercy</strong><small>CONTENT HUB</small></span>
+      </a>
+      <div class="workspace-switch"><span class="workspace-dot"></span><span><small>WORKSPACE</small><strong>House of Mercy</strong></span><span class="chevron">⌄</span></div>
+      <nav class="primary-nav" aria-label="Main navigation">
+        <p class="nav-label">WORKSPACE</p>
+        <a href="#overview" data-view="overview" class="nav-link active"><span class="nav-icon">⌂</span>Overview</a>
+        <a href="#calendar" data-view="calendar" class="nav-link"><span class="nav-icon">▦</span>Calendar</a>
+        <a href="#ideas" data-view="ideas" class="nav-link"><span class="nav-icon">✳</span>Content Ideas</a>
+        <a href="#board" data-view="board" class="nav-link"><span class="nav-icon">▤</span>Idea Board</a>
+        <a href="#insights" data-view="insights" class="nav-link"><span class="nav-icon">⌁</span>Insights</a>
+        <a href="#assistant" data-view="assistant" class="nav-link"><span class="nav-icon">✧</span>AI Assistant</a>
+        <p class="nav-label nav-label-spaced">YOUR SPACE</p>
+        <a href="#team" data-view="team" class="nav-link"><span class="nav-icon">♧</span>Team</a>
+        <a href="#settings" data-view="settings" class="nav-link"><span class="nav-icon">⚙</span>Settings</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="help-card"><span class="help-icon">✦</span><strong>A little help goes a long way.</strong><p>Find your way around your content hub.</p><button class="text-button" data-action="help">Explore help <span>→</span></button></div>
+        <div class="user-profile"><div class="avatar">HM</div><span><strong>Workspace Admin</strong><small>Administrator</small></span><button class="icon-button" aria-label="Profile menu">···</button></div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar">
+        <button class="mobile-menu icon-button" data-action="menu" aria-label="Toggle navigation">☰</button>
+        <div class="breadcrumbs"><span>House of Mercy</span><span class="slash">/</span><strong id="crumb">Overview</strong></div>
+        <div class="topbar-actions"><span class="today-label" id="today-label"></span><button class="icon-button notification-button" aria-label="Notifications">♧<i></i></button><div class="avatar small-avatar">HM</div></div>
+      </header>
+      <section class="page-content" id="page-content" aria-live="polite"></section>
+      <footer class="app-footer"><span>Made for the moments that bring us together.</span><span>House of Mercy · Content Hub</span></footer>
+    </main>
+  </div>
+  <div id="modal-root"></div>
+  <input id="csv-file" type="file" accept=".csv,text/csv" hidden>
+  <script src="app.js"></script>
+</body>
+</html>
