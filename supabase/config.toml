@@ -1,0 +1,3 @@
+# Custom username/password auth is verified inside the function, so the platform JWT check is off.
+[functions.hom-api]
+verify_jwt = false
