@@ -74,15 +74,20 @@ const cleanUsername = u => String(u || '').trim().toLowerCase();
 const validUsername = u => /^[A-Za-z0-9_-]{3,30}$/.test(String(u || ''));
 const validPassword = p => typeof p === 'string' && p.length >= 8 && p.length <= 200;
 
+let authConfigured = true;
 if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
   const password = process.env.HOM_ADMIN_INITIAL_PASSWORD;
-  if (!password) throw new Error('Set HOM_ADMIN_INITIAL_PASSWORD to provision the initial HOMMediaAdmin account.');
-  if (!validPassword(password)) throw new Error('HOM_ADMIN_INITIAL_PASSWORD must be 8–200 characters.');
-  const { salt, hash } = hashPassword(password);
-  const id = uid(), created = now();
-  db.prepare('INSERT INTO users(id,username,first_name,last_name,name,pw_salt,pw_hash,password_requires_change,account_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
-    .run(id, 'HOMMediaAdmin', 'House of Mercy', 'Admin', 'House of Mercy Admin', salt, hash, 1, 'Pending Password Setup', created);
-  db.prepare('INSERT INTO memberships(workspace_id,user_id,role,created_at) VALUES(?,?,?,?)').run(DEFAULT_WORKSPACE, id, 'Admin', created);
+  if (!password || !validPassword(password)) {
+    // Do not crash: the API reports a safe "not configured" error instead of the browser seeing a dead server.
+    authConfigured = false;
+    console.error('Authentication is not configured: set HOM_ADMIN_INITIAL_PASSWORD (8-200 characters) to provision the initial HOMMediaAdmin account.');
+  } else {
+    const { salt, hash } = hashPassword(password);
+    const id = uid(), created = now();
+    db.prepare('INSERT INTO users(id,username,first_name,last_name,name,pw_salt,pw_hash,password_requires_change,account_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run(id, 'HOMMediaAdmin', 'House of Mercy', 'Admin', 'House of Mercy Admin', salt, hash, 1, 'Pending Password Setup', created);
+    db.prepare('INSERT INTO memberships(workspace_id,user_id,role,created_at) VALUES(?,?,?,?)').run(DEFAULT_WORKSPACE, id, 'Admin', created);
+  }
 }
 
 const publicUser = user => ({
@@ -251,10 +256,12 @@ async function api(req, res, url) {
   const body = method === 'GET' || method === 'DELETE' ? {} : await readBody(req);
 
   if (parts[0] === 'login' && method === 'POST') {
+    if (!authConfigured && !db.prepare('SELECT 1 FROM users LIMIT 1').get()) throw new HttpError(503, 'Authentication service is not configured.');
     const username = cleanUsername(body.username);
     throttle('login:' + req.socket.remoteAddress + ':' + username);
     const user = db.prepare('SELECT * FROM users WHERE username=? COLLATE NOCASE').get(username);
-    if (!user || user.account_status === 'Suspended' || !verifyPassword(String(body.password || ''), user)) throw new HttpError(401, 'Incorrect username or password.');
+    if (!user || user.account_status === 'Suspended' || !verifyPassword(String(body.password || ''), user)) throw new HttpError(401, 'Invalid username or password.');
+    if (!workspacesFor(user.id).length) throw new HttpError(403, 'You do not have permission to access this workspace.');
     db.prepare('UPDATE users SET last_login=? WHERE id=?').run(now(), user.id);
     createSession(res, user.id);
     return send(res, 200, { user: publicUser({ ...user, passwordRequiresChange: !!user.password_requires_change }), workspaces: workspacesFor(user.id) });
@@ -424,7 +431,8 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     if (e instanceof HttpError) return send(res, e.status, { error: e.message });
     console.error(e);
-    send(res, 500, { error: 'Something went wrong.' });
+    if (/database|SQLITE|sqlite/i.test(String(e && (e.code || e.message)))) return send(res, 503, { error: 'The House of Mercy authentication service is temporarily unavailable.' });
+    send(res, 500, { error: 'Something went wrong while signing you in. Please try again.' });
   }
 });
 if (require.main === module) server.listen(PORT, () => console.log(`House of Mercy Content Hub running at http://localhost:${PORT}`));
