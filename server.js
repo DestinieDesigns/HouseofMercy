@@ -16,7 +16,6 @@ const COLLECTIONS = ['ideas', 'reminders', 'goals', 'analytics', 'hashtagSets', 
 const KV_KEYS = ['settings', 'lastGeneration'];
 const STAGES = ['Ideas', 'Developing', 'Review', 'Approved', 'Planned'];
 const COMMENT_TARGETS = ['ideas', 'reminders', 'goals'];
-const INVITE_DAYS = 7;
 const SESSION_DAYS = 30;
 const DEFAULT_WORKSPACE = 'house-of-mercy';
 
@@ -25,10 +24,9 @@ const db = new DatabaseSync(DB_FILE);
 db.exec(`
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pw_salt TEXT NOT NULL, pw_hash TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, first_name TEXT NOT NULL, last_name TEXT NOT NULL, name TEXT NOT NULL, pw_salt TEXT NOT NULL, pw_hash TEXT NOT NULL, password_requires_change INTEGER NOT NULL DEFAULT 0, account_status TEXT NOT NULL DEFAULT 'Active', created_at TEXT NOT NULL, last_login TEXT);
 CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS memberships(workspace_id TEXT NOT NULL REFERENCES workspaces(id), user_id TEXT NOT NULL REFERENCES users(id), role TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(workspace_id, user_id));
-CREATE TABLE IF NOT EXISTS invitations(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), email TEXT NOT NULL, role TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, invited_by TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, accepted_at TEXT, accepted_by TEXT);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS items(workspace_id TEXT NOT NULL REFERENCES workspaces(id), collection TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY(workspace_id, collection, id));
 CREATE TABLE IF NOT EXISTS kv(workspace_id TEXT NOT NULL REFERENCES workspaces(id), key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(workspace_id, key));
@@ -38,6 +36,25 @@ CREATE INDEX IF NOT EXISTS idx_items_ws ON items(workspace_id, collection);
 CREATE INDEX IF NOT EXISTS idx_comments_ws ON comments(workspace_id, target_kind, target_id);
 CREATE INDEX IF NOT EXISTS idx_activity_ws ON activity(workspace_id, id);
 `);
+const userColumns = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+if (!userColumns.includes('username')) {
+  db.exec('PRAGMA foreign_keys=OFF; CREATE TABLE users_new(id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, first_name TEXT NOT NULL, last_name TEXT NOT NULL, name TEXT NOT NULL, pw_salt TEXT NOT NULL, pw_hash TEXT NOT NULL, password_requires_change INTEGER NOT NULL DEFAULT 0, account_status TEXT NOT NULL DEFAULT \'Active\', created_at TEXT NOT NULL, last_login TEXT);');
+  const legacyUsers = db.prepare('SELECT id,email,name,pw_salt,pw_hash,created_at FROM users ORDER BY created_at,id').all();
+  const insertLegacy = db.prepare('INSERT INTO users_new(id,username,first_name,last_name,name,pw_salt,pw_hash,created_at) VALUES(?,?,?,?,?,?,?,?)');
+  const used = new Set();
+  for (const user of legacyUsers) {
+    const name = String(user.name || '').trim().slice(0, 80) || 'House of Mercy Member';
+    const parts = name.split(/\s+/);
+    const rawBase = String(user.email || '').split('@')[0].replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24);
+    const base = rawBase.length >= 3 ? rawBase : `${rawBase || 'New'}User`;
+    let username = base, suffix = 1;
+    while (used.has(username.toLowerCase())) username = `${base.slice(0, 26)}${suffix++}`;
+    used.add(username.toLowerCase());
+    insertLegacy.run(user.id, username, parts[0] || 'Member', parts.slice(1).join(' ') || '', name, user.pw_salt, user.pw_hash, user.created_at);
+  }
+  db.exec('DROP TABLE users; ALTER TABLE users_new RENAME TO users; PRAGMA foreign_keys=ON;');
+  db.exec('DROP TABLE IF EXISTS invitations');
+}
 const now = () => new Date().toISOString();
 const uid = () => crypto.randomUUID();
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -52,9 +69,28 @@ function verifyPassword(pw, user) {
   const a = Buffer.from(hashPassword(pw, user.pw_salt).hash, 'hex'), b = Buffer.from(user.pw_hash, 'hex');
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
-const cleanEmail = e => String(e || '').trim().toLowerCase();
-const validEmail = e => e.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 const cleanText = (s, max) => String(s || '').trim().slice(0, max);
+const cleanUsername = u => String(u || '').trim().toLowerCase();
+const validUsername = u => /^[A-Za-z0-9_-]{3,30}$/.test(String(u || ''));
+const validPassword = p => typeof p === 'string' && p.length >= 8 && p.length <= 200;
+
+if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
+  const password = process.env.HOM_ADMIN_INITIAL_PASSWORD;
+  if (!password) throw new Error('Set HOM_ADMIN_INITIAL_PASSWORD to provision the initial HOMMediaAdmin account.');
+  if (!validPassword(password)) throw new Error('HOM_ADMIN_INITIAL_PASSWORD must be 8–200 characters.');
+  const { salt, hash } = hashPassword(password);
+  const id = uid(), created = now();
+  db.prepare('INSERT INTO users(id,username,first_name,last_name,name,pw_salt,pw_hash,password_requires_change,account_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+    .run(id, 'HOMMediaAdmin', 'House of Mercy', 'Admin', 'House of Mercy Admin', salt, hash, 1, 'Pending Password Setup', created);
+  db.prepare('INSERT INTO memberships(workspace_id,user_id,role,created_at) VALUES(?,?,?,?)').run(DEFAULT_WORKSPACE, id, 'Admin', created);
+}
+
+const publicUser = user => ({
+  id: user.id, username: user.username, firstName: user.firstName || user.first_name,
+  lastName: user.lastName || user.last_name, name: user.name,
+  passwordRequiresChange: !!(user.passwordRequiresChange ?? user.password_requires_change),
+  accountStatus: user.accountStatus || user.account_status || 'Active'
+});
 
 function createSession(res, userId) {
   const token = crypto.randomBytes(32).toString('hex');
@@ -65,10 +101,11 @@ function createSession(res, userId) {
 function sessionUser(req) {
   const m = /(?:^|;\s*)hom_session=([a-f0-9]{64})/.exec(req.headers.cookie || '');
   if (!m) return null;
-  const row = db.prepare('SELECT u.id,u.email,u.name,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?').get(sha(m[1]));
+  const row = db.prepare('SELECT u.id,u.username,u.first_name firstName,u.last_name lastName,u.name,u.password_requires_change passwordRequiresChange,u.account_status accountStatus,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?').get(sha(m[1]));
   if (!row) return null;
   if (row.expires_at < now()) { db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha(m[1])); return null; }
-  return { id: row.id, email: row.email, name: row.name, tokenHash: sha(m[1]) };
+  if (row.accountStatus === 'Suspended') return null;
+  return { ...row, tokenHash: sha(m[1]) };
 }
 const attempts = new Map();
 function throttle(key) {
@@ -78,31 +115,15 @@ function throttle(key) {
   if (attempts.size > 5000) for (const [k, l] of attempts) if (t - l[l.length - 1] > 15 * 60e3) attempts.delete(k);
 }
 
-// ---------- workspaces / invitations ----------
+// ---------- workspaces / memberships ----------
 function membership(workspaceId, userId) {
   return db.prepare('SELECT role FROM memberships WHERE workspace_id=? AND user_id=?').get(workspaceId, userId) || null;
 }
 function requireMember(user, workspaceId) {
+  if (user.passwordRequiresChange) throw new HttpError(403, 'Change your temporary password before continuing.');
   const m = membership(workspaceId, user.id);
   if (!m) throw new HttpError(404, 'Workspace not found.'); // do not reveal other workspaces exist
   return m.role;
-}
-const inviteStatus = i => i.accepted_at ? 'Accepted' : i.expires_at < now() ? 'Expired' : 'Pending';
-function findInvite(token) {
-  return db.prepare('SELECT * FROM invitations WHERE token_hash=?').get(sha(String(token || '')));
-}
-function acceptInvite(user, token) {
-  const inv = findInvite(token);
-  if (!inv) throw new HttpError(404, 'This invitation was not found.');
-  if (inv.accepted_at) throw new HttpError(409, 'This invitation has already been used.');
-  if (inv.expires_at < now()) throw new HttpError(410, 'This invitation has expired. Ask an admin to send a new one.');
-  if (inv.email !== user.email) throw new HttpError(403, `This invitation was sent to a different email address (${inv.email}).`);
-  tx(() => {
-    if (!membership(inv.workspace_id, user.id)) db.prepare('INSERT INTO memberships(workspace_id,user_id,role,created_at) VALUES(?,?,?,?)').run(inv.workspace_id, user.id, inv.role, now());
-    db.prepare('UPDATE invitations SET accepted_at=?,accepted_by=? WHERE id=?').run(now(), user.id, inv.id);
-    log(inv.workspace_id, user, `joined the workspace as ${inv.role}`);
-  });
-  return inv.workspace_id;
 }
 function log(workspaceId, user, text) {
   db.prepare('INSERT INTO activity(workspace_id,user_id,user_name,text,created_at) VALUES(?,?,?,?,?)').run(workspaceId, user ? user.id : null, user ? user.name : 'Someone', text, now());
@@ -111,7 +132,7 @@ function workspacesFor(userId) {
   return db.prepare('SELECT w.id,w.name,m.role FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=? ORDER BY w.created_at').all(userId);
 }
 function adminCount(workspaceId) {
-  return db.prepare("SELECT COUNT(*) c FROM memberships WHERE workspace_id=? AND role='Admin'").get(workspaceId).c;
+  return db.prepare("SELECT COUNT(*) c FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND m.role='Admin' AND u.account_status!='Suspended'").get(workspaceId).c;
 }
 
 // ---------- workspace data ----------
@@ -124,18 +145,15 @@ function loadData(workspaceId) {
 }
 function fullState(workspaceId, user, role) {
   const ws = db.prepare('SELECT id,name FROM workspaces WHERE id=?').get(workspaceId);
-  const members = db.prepare('SELECT u.id,u.name,u.email,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? ORDER BY m.created_at').all(workspaceId);
+  const members = db.prepare('SELECT u.id,u.name,u.username,u.account_status accountStatus,u.password_requires_change passwordRequiresChange,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? ORDER BY m.created_at').all(workspaceId)
+    .map(m => ({ ...m, status: m.accountStatus === 'Suspended' ? 'Suspended' : m.passwordRequiresChange ? 'Pending Password Setup' : 'Active' }));
   const out = {
-    workspace: ws, me: { id: user.id, name: user.name, email: user.email, role },
+    workspace: ws, me: { ...publicUser(user), role },
     workspaces: workspacesFor(user.id), data: loadData(workspaceId), members,
     comments: db.prepare('SELECT id,target_kind targetKind,target_id targetId,parent_id parentId,user_id userId,user_name author,body text,created_at at FROM comments WHERE workspace_id=? ORDER BY created_at').all(workspaceId),
     activity: db.prepare('SELECT id,user_id userId,user_name userName,text,created_at at FROM activity WHERE workspace_id=? ORDER BY id DESC LIMIT 100').all(workspaceId),
     invitations: [],
   };
-  if (role === 'Admin') {
-    out.invitations = db.prepare('SELECT id,email,role,created_at createdAt,expires_at expiresAt,accepted_at acceptedAt FROM invitations WHERE workspace_id=? ORDER BY created_at DESC LIMIT 100').all(workspaceId)
-      .map(i => ({ id: i.id, email: i.email, role: i.role, createdAt: i.createdAt, expiresAt: i.expiresAt, status: inviteStatus({ accepted_at: i.acceptedAt, expires_at: i.expiresAt }) }));
-  }
   return out;
 }
 
@@ -232,62 +250,34 @@ async function api(req, res, url) {
   }
   const body = method === 'GET' || method === 'DELETE' ? {} : await readBody(req);
 
-  if (parts[0] === 'invitations' && parts[1] === 'lookup' && method === 'GET') {
-    const inv = findInvite(url.searchParams.get('token'));
-    if (!inv) throw new HttpError(404, 'This invitation was not found.');
-    const ws = db.prepare('SELECT name FROM workspaces WHERE id=?').get(inv.workspace_id);
-    return send(res, 200, { email: inv.email, role: inv.role, workspace: ws.name, status: inviteStatus(inv), hasAccount: !!db.prepare('SELECT 1 FROM users WHERE email=?').get(inv.email) });
-  }
-  if (parts[0] === 'register' && method === 'POST') {
-    throttle('reg:' + req.socket.remoteAddress);
-    const email = cleanEmail(body.email), name = cleanText(body.name, 80), pw = String(body.password || '');
-    if (!name) throw new HttpError(400, 'Please enter your name.');
-    if (!validEmail(email)) throw new HttpError(400, 'Please enter a valid email address.');
-    if (pw.length < 8 || pw.length > 200) throw new HttpError(400, 'Password must be at least 8 characters.');
-    if (db.prepare('SELECT 1 FROM users WHERE email=?').get(email)) throw new HttpError(409, 'An account with this email already exists. Please sign in.');
-    const inv = body.inviteToken ? findInvite(body.inviteToken) : null;
-    if (body.inviteToken && !inv) throw new HttpError(404, 'This invitation was not found.');
-    const firstUser = db.prepare('SELECT COUNT(*) c FROM memberships WHERE workspace_id=?').get(DEFAULT_WORKSPACE).c === 0;
-    if (inv) {
-      if (inv.accepted_at) throw new HttpError(409, 'This invitation has already been used.');
-      if (inv.expires_at < now()) throw new HttpError(410, 'This invitation has expired. Ask an admin to send a new one.');
-      if (inv.email !== email) throw new HttpError(403, `This invitation was sent to ${inv.email}. Please use that email address.`);
-    }
-    if (!inv && !firstUser) throw new HttpError(403, 'House of Mercy is invitation-only. Ask a workspace admin to invite you.');
-    const user = { id: uid(), email, name };
-    const { salt, hash } = hashPassword(pw);
-    tx(() => {
-      db.prepare('INSERT INTO users(id,email,name,pw_salt,pw_hash,created_at) VALUES(?,?,?,?,?,?)').run(user.id, email, name, salt, hash, now());
-      if (!inv) { // very first account bootstraps the workspace as its Admin
-        db.prepare('INSERT INTO memberships(workspace_id,user_id,role,created_at) VALUES(?,?,?,?)').run(DEFAULT_WORKSPACE, user.id, 'Admin', now());
-        log(DEFAULT_WORKSPACE, user, 'created the House of Mercy workspace');
-      }
-    });
-    if (inv) acceptInvite(user, body.inviteToken);
-    createSession(res, user.id);
-    return send(res, 201, { user: { id: user.id, name, email }, workspaces: workspacesFor(user.id) });
-  }
   if (parts[0] === 'login' && method === 'POST') {
-    const email = cleanEmail(body.email);
-    throttle('login:' + req.socket.remoteAddress + ':' + email);
-    const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
-    if (!user || !verifyPassword(String(body.password || ''), user)) throw new HttpError(401, 'Incorrect email or password.');
-    if (body.inviteToken) acceptInvite(user, body.inviteToken);
+    const username = cleanUsername(body.username);
+    throttle('login:' + req.socket.remoteAddress + ':' + username);
+    const user = db.prepare('SELECT * FROM users WHERE username=? COLLATE NOCASE').get(username);
+    if (!user || user.account_status === 'Suspended' || !verifyPassword(String(body.password || ''), user)) throw new HttpError(401, 'Incorrect username or password.');
+    db.prepare('UPDATE users SET last_login=? WHERE id=?').run(now(), user.id);
     createSession(res, user.id);
-    return send(res, 200, { user: { id: user.id, name: user.name, email: user.email }, workspaces: workspacesFor(user.id) });
+    return send(res, 200, { user: publicUser({ ...user, passwordRequiresChange: !!user.password_requires_change }), workspaces: workspacesFor(user.id) });
   }
 
   const user = sessionUser(req);
   if (!user) throw new HttpError(401, 'Please sign in.');
+  if (parts[0] === 'change-password' && method === 'POST') {
+    throttle('password-change:' + user.id + ':' + req.socket.remoteAddress);
+    const password = String(body.newPassword || '');
+    if (!validPassword(password)) throw new HttpError(400, 'New password must be at least 8 characters.');
+    if (password !== String(body.confirmPassword || '')) throw new HttpError(400, 'New passwords do not match.');
+    const current = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+    if (!user.passwordRequiresChange && (!body.currentPassword || !verifyPassword(String(body.currentPassword), current))) throw new HttpError(401, 'Current password is incorrect.');
+    const { salt, hash } = hashPassword(password);
+    db.prepare("UPDATE users SET pw_salt=?,pw_hash=?,password_requires_change=0,account_status='Active' WHERE id=?").run(salt, hash, user.id);
+    return send(res, 200, { ok: true });
+  }
   if (parts[0] === 'logout' && method === 'POST') {
     db.prepare('DELETE FROM sessions WHERE token_hash=?').run(user.tokenHash);
     return send(res, 200, { ok: true }, { 'Set-Cookie': 'hom_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
   }
-  if (parts[0] === 'me' && method === 'GET') return send(res, 200, { user: { id: user.id, name: user.name, email: user.email }, workspaces: workspacesFor(user.id) });
-  if (parts[0] === 'invitations' && parts[1] === 'accept' && method === 'POST') {
-    const wid = acceptInvite(user, body.token);
-    return send(res, 200, { workspaceId: wid, workspaces: workspacesFor(user.id) });
-  }
+  if (parts[0] === 'me' && method === 'GET') return send(res, 200, { user: publicUser(user), workspaces: workspacesFor(user.id) });
 
   if (parts[0] !== 'w' || !parts[1]) throw new HttpError(404, 'Not found.');
   const wid = parts[1];
@@ -340,41 +330,74 @@ async function api(req, res, url) {
   }
 
   // ----- admin-only team management -----
-  if (sub === 'invitations' || sub === 'members') {
+  if (sub === 'members') {
     if (role !== 'Admin') throw new HttpError(403, 'Only admins can manage the team.');
   }
-  if (sub === 'invitations' && method === 'POST') {
-    const email = cleanEmail(body.email);
-    if (!validEmail(email)) throw new HttpError(400, 'Please enter a valid email address.');
+  if (sub === 'members' && parts.length === 3 && method === 'POST') {
+    const firstName = cleanText(body.firstName, 60), lastName = cleanText(body.lastName, 60);
+    const username = String(body.username || '').trim(), password = String(body.temporaryPassword || '');
+    if (!firstName || !lastName) throw new HttpError(400, 'Please enter a first and last name.');
+    if (!validUsername(username)) throw new HttpError(400, 'Username must be 3–30 characters and use only letters, numbers, _ or -.');
+    if (!validPassword(password)) throw new HttpError(400, 'Temporary password must be at least 8 characters.');
     if (!ROLES.includes(body.role)) throw new HttpError(400, 'Please select a role.');
-    if (db.prepare('SELECT 1 FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND u.email=?').get(wid, email)) throw new HttpError(409, 'That person is already a member.');
-    const token = crypto.randomBytes(24).toString('hex');
+    if (db.prepare('SELECT 1 FROM users WHERE username=? COLLATE NOCASE').get(username)) throw new HttpError(409, 'That username is already in use. Please choose another username.');
+    const member = { id: uid(), username, firstName, lastName, name: `${firstName} ${lastName}` };
+    const { salt, hash } = hashPassword(password), created = now();
     tx(() => {
-      // a new invite replaces any older pending one for the same address
-      db.prepare('DELETE FROM invitations WHERE workspace_id=? AND email=? AND accepted_at IS NULL').run(wid, email);
-      db.prepare('INSERT INTO invitations(id,workspace_id,email,role,token_hash,invited_by,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)').run(uid(), wid, email, body.role, sha(token), user.id, now(), new Date(Date.now() + INVITE_DAYS * 864e5).toISOString());
-      log(wid, user, `invited ${email} as ${body.role}`);
+      db.prepare("INSERT INTO users(id,username,first_name,last_name,name,pw_salt,pw_hash,password_requires_change,account_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .run(member.id, username, firstName, lastName, member.name, salt, hash, 1, 'Pending Password Setup', created);
+      db.prepare('INSERT INTO memberships(workspace_id,user_id,role,created_at) VALUES(?,?,?,?)').run(wid, member.id, body.role, created);
+      log(wid, user, `created an account for ${member.name} as ${body.role}`);
     });
-    return send(res, 201, { token, expiresInDays: INVITE_DAYS });
+    return send(res, 201, { member: { ...member, role: body.role, status: 'Pending Password Setup' } });
   }
-  if (sub === 'invitations' && method === 'DELETE') {
-    const r = db.prepare('DELETE FROM invitations WHERE workspace_id=? AND id=? AND accepted_at IS NULL').run(wid, parts[3] || '');
-    if (!r.changes) throw new HttpError(404, 'Invitation not found.');
+  if (sub === 'members' && parts[4] === 'reset-password' && method === 'POST') {
+    throttle('password-reset:' + user.id + ':' + req.socket.remoteAddress);
+    const target = db.prepare('SELECT u.id,u.name,u.account_status FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND u.id=?').get(wid, parts[3] || '');
+    if (!target) throw new HttpError(404, 'Member not found.');
+    const password = String(body.temporaryPassword || '');
+    if (!validPassword(password)) throw new HttpError(400, 'Temporary password must be at least 8 characters.');
+    const { salt, hash } = hashPassword(password);
+    tx(() => {
+      db.prepare("UPDATE users SET pw_salt=?,pw_hash=?,password_requires_change=1,account_status=CASE WHEN account_status='Suspended' THEN 'Suspended' ELSE 'Pending Password Setup' END WHERE id=?").run(salt, hash, target.id);
+      db.prepare('DELETE FROM sessions WHERE user_id=?').run(target.id);
+      log(wid, user, `reset the password for ${target.name}`);
+    });
     return send(res, 200, { ok: true });
   }
-  if (sub === 'members' && method === 'PATCH') {
+  if (sub === 'members' && parts[4] === 'profile' && method === 'PATCH') {
+    const target = db.prepare('SELECT u.id,u.name FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND u.id=?').get(wid, parts[3] || '');
+    if (!target) throw new HttpError(404, 'Member not found.');
+    const firstName = cleanText(body.firstName, 60), lastName = cleanText(body.lastName, 60);
+    if (!firstName || !lastName) throw new HttpError(400, 'Please enter a first and last name.');
+    db.prepare('UPDATE users SET first_name=?,last_name=?,name=? WHERE id=?').run(firstName, lastName, `${firstName} ${lastName}`, target.id);
+    log(wid, user, `updated the account name for ${target.name}`);
+    return send(res, 200, { ok: true });
+  }
+  if (sub === 'members' && parts[4] === 'status' && method === 'PATCH') {
+    const target = db.prepare('SELECT u.id,m.role,u.name,u.password_requires_change passwordRequiresChange,u.account_status accountStatus FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND u.id=?').get(wid, parts[3] || '');
+    if (!target) throw new HttpError(404, 'Member not found.');
+    if (!['Active', 'Suspended'].includes(body.status)) throw new HttpError(400, 'Unknown account status.');
+    if (body.status === 'Suspended' && target.accountStatus !== 'Suspended' && target.role === 'Admin' && adminCount(wid) <= 1) throw new HttpError(409, 'A workspace needs at least one active admin.');
+    const status = body.status === 'Suspended' ? 'Suspended' : target.passwordRequiresChange ? 'Pending Password Setup' : 'Active';
+    db.prepare('UPDATE users SET account_status=? WHERE id=?').run(status, target.id);
+    if (status === 'Suspended') db.prepare('DELETE FROM sessions WHERE user_id=?').run(target.id);
+    log(wid, user, `${body.status === 'Suspended' ? 'suspended' : 'reactivated'} ${target.name}'s account`);
+    return send(res, 200, { ok: true });
+  }
+  if (sub === 'members' && parts.length === 4 && method === 'PATCH') {
     const target = db.prepare('SELECT m.role,u.name FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND m.user_id=?').get(wid, parts[3] || '');
     if (!target) throw new HttpError(404, 'Member not found.');
     if (!ROLES.includes(body.role)) throw new HttpError(400, 'Unknown role.');
-    if (target.role === 'Admin' && body.role !== 'Admin' && adminCount(wid) <= 1) throw new HttpError(409, 'A workspace needs at least one admin.');
+    if (target.role === 'Admin' && body.role !== 'Admin' && adminCount(wid) <= 1) throw new HttpError(409, 'A workspace needs at least one active admin.');
     db.prepare('UPDATE memberships SET role=? WHERE workspace_id=? AND user_id=?').run(body.role, wid, parts[3]);
     log(wid, user, `changed ${target.name}’s role to ${body.role}`);
     return send(res, 200, { ok: true });
   }
-  if (sub === 'members' && method === 'DELETE') {
+  if (sub === 'members' && parts.length === 4 && method === 'DELETE') {
     const target = db.prepare('SELECT m.role,u.name FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND m.user_id=?').get(wid, parts[3] || '');
     if (!target) throw new HttpError(404, 'Member not found.');
-    if (target.role === 'Admin' && adminCount(wid) <= 1) throw new HttpError(409, 'A workspace needs at least one admin.');
+    if (target.role === 'Admin' && adminCount(wid) <= 1) throw new HttpError(409, 'A workspace needs at least one active admin.');
     tx(() => {
       db.prepare('DELETE FROM memberships WHERE workspace_id=? AND user_id=?').run(wid, parts[3]);
       // unassign work from the removed member
