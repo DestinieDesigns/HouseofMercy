@@ -26,3 +26,7 @@ Everyone has their own login, and everyone works in the same **House of Mercy** 
 - **Sharing:** the app polls every few seconds, so changes (new ideas, board moves, comments, assignments) appear for everyone with access. The Team and My Work pages show assigned work, and the activity log records who did what.
 
 CSV imports accept mapped available columns and retain import history in the browser. Analytics and posting-time suggestions are calculated only from imported rows; unavailable information is not fabricated. Admins can export workspace data from Settings.
+
+## Supabase backend (GitHub Pages deployment)
+
+Production runs as a static GitHub Pages frontend + Supabase (PostgreSQL + the `hom-api` Edge Function). See [docs-supabase-migration.md](docs-supabase-migration.md) for the schema, RLS, auth design, deployment steps and the SQLite migration script. `config.js` holds only the public Supabase URL and publishable key; the secret key must never be committed.

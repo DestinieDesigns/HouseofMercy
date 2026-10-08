@@ -1,0 +1,24 @@
+name: Deploy to GitHub Pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write public config (URL + publishable key only)
+        run: |
+          mkdir site && cp index.html app.js styles.css site/
+          cat > site/config.js <<JS
+          window.HOM_CONFIG = { supabaseUrl: '${{ vars.SUPABASE_URL }}', supabasePublishableKey: '${{ vars.SUPABASE_PUBLISHABLE_KEY }}' };
+          JS
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: site }
+      - uses: actions/deploy-pages@v4
