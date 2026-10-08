@@ -23,13 +23,14 @@
     <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.7 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.7-1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.7-1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.7 1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 2z"/></symbol>
     <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
     <symbol id="icon-close" viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></symbol>
+    <symbol id="icon-logout" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/></symbol>
   </svg>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar" aria-label="Primary sidebar">
       <div class="sidebar-header">
         <a class="brand" href="#overview" data-view="overview" aria-label="House of Mercy Content Hub home">
           <span class="brand-mark">HoM</span>
-          <span class="brand-copy"><strong>CONTENT HUB</strong><small>HOUSE OF MERCY</small></span>
+          <span class="brand-copy"><strong>HOUSE OF MERCY</strong><small>CONTENT HUB</small></span>
         </a>
         <button class="sidebar-close icon-button" type="button" data-action="close-nav" aria-label="Close navigation"><svg aria-hidden="true"><use href="#icon-close"></use></svg></button>
       </div>
@@ -46,7 +47,7 @@
         <a href="#settings" data-view="settings" class="nav-link"><svg class="nav-icon" aria-hidden="true"><use href="#icon-settings"></use></svg><span>Settings</span></a>
       </nav>
       <div class="sidebar-bottom">
-        <div class="user-profile"><div class="avatar" aria-hidden="true">HM</div><span><strong id="user-username">…</strong><small id="user-role"></small></span><button class="icon-button sign-out-button" data-action="logout" aria-label="Sign out" title="Sign out"><span aria-hidden="true">↗</span></button></div>
+        <div class="user-profile"><div class="avatar" aria-hidden="true">HM</div><span><strong id="user-username">…</strong><small id="user-role"></small></span><button class="icon-button sign-out-button" data-action="logout" aria-label="Sign out" title="Sign out"><svg aria-hidden="true"><use href="#icon-logout"></use></svg></button></div>
       </div>
     </aside>
     <button class="nav-backdrop" id="nav-backdrop" type="button" data-action="close-nav" aria-label="Close navigation" hidden></button>
