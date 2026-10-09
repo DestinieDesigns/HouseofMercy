@@ -39,8 +39,7 @@ function corsHeaders(req: Request) {
     "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-hom-session",
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   };
-  if (ALLOWED.includes("*")) headers["Access-Control-Allow-Origin"] = "*";
-  else if (ALLOWED.includes(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  if (ALLOWED.includes(origin)) headers["Access-Control-Allow-Origin"] = origin;
   return headers;
 }
 const send = (req: Request, status: number, body: unknown) =>
@@ -365,6 +364,7 @@ async function route(req: Request, url: URL): Promise<Response> {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
   try {
+    if (!SERVICE_KEY || !Deno.env.get("SUPABASE_URL")) throw new HttpError(503, "The House of Mercy backend is missing its server-side Supabase credentials.");
     return await route(req, new URL(req.url));
   } catch (e) {
     if (e instanceof HttpError) return send(req, e.status, { error: e.message });
