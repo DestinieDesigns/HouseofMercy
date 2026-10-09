@@ -14,7 +14,7 @@ const STAGES = ["Ideas", "Developing", "Review", "Approved", "Planned"];
 const COMMENT_TARGETS = ["ideas", "reminders", "goals"];
 const SESSION_HOURS = 12;
 const DEFAULT_WORKSPACE = "house-of-mercy";
-const ALLOWED = (Deno.env.get("HOM_ALLOWED_ORIGINS") ?? "*").split(",").map((s) => s.trim()).filter(Boolean);
+const ALLOWED = (Deno.env.get("HOM_ALLOWED_ORIGINS") ?? "https://destiniedesigns.github.io").split(",").map((s) => s.trim()).filter(Boolean);
 
 class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 // deno-lint-ignore no-explicit-any
@@ -34,12 +34,14 @@ const must = <T>(r: { data: T; error: Any }): T => { if (r.error) throw r.error;
 
 function corsHeaders(req: Request) {
   const origin = req.headers.get("origin") ?? "";
-  const allow = ALLOWED.includes("*") ? "*" : ALLOWED.includes(origin) ? origin : ALLOWED[0];
-  return {
-    "Access-Control-Allow-Origin": allow, "Vary": "Origin",
+  const headers: Record<string, string> = {
+    "Vary": "Origin",
     "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-hom-session",
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   };
+  if (ALLOWED.includes("*")) headers["Access-Control-Allow-Origin"] = "*";
+  else if (ALLOWED.includes(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
 }
 const send = (req: Request, status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });

@@ -13,17 +13,17 @@ jobs:
     environment: github-pages
     steps:
       - uses: actions/checkout@v4
-      - name: Write public config (URL + publishable key only)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run tests
+        run: npm test
+      - name: Prepare site and validate public config
         env:
-          SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL || 'https://fsideooczwhfwgwxhhbb.supabase.co' }}
           SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY || secrets.SUPABASE_PUBLISHABLE_KEY }}
         run: |
-          if [ -z "$SUPABASE_PUBLISHABLE_KEY" ]; then
-            echo "::warning::SUPABASE_PUBLISHABLE_KEY is not set. The site will deploy without backend access; add it under Settings > Secrets and variables > Actions to enable the backend."
-          fi
-          case "$SUPABASE_PUBLISHABLE_KEY" in sb_secret_*) echo "::error::Refusing to publish a secret key."; exit 1;; esac
           mkdir site && cp index.html app.js styles.css site/
-          node -e "require('fs').writeFileSync('site/config.js','window.HOM_CONFIG = '+JSON.stringify({supabaseUrl:process.env.SUPABASE_URL,supabasePublishableKey:process.env.SUPABASE_PUBLISHABLE_KEY})+';\n')"
+          node scripts/generate-pages-config.js site/config.js
       - uses: actions/upload-pages-artifact@v3
         with: { path: site }
       - uses: actions/deploy-pages@v4
