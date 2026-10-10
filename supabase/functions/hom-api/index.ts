@@ -63,7 +63,10 @@ async function bootstrapAdmin() {
   const { count } = await db.from("app_users").select("id", { count: "exact", head: true });
   if (count) return;
   const password = Deno.env.get("HOM_ADMIN_INITIAL_PASSWORD");
-  if (!password || !validPassword(password)) throw new HttpError(503, "Authentication service is not configured.");
+  if (!password || !validPassword(password)) {
+    console.error("Cannot provision HOMMediaAdmin: set the HOM_ADMIN_INITIAL_PASSWORD secret (8-200 characters) on the hom-api function.");
+    throw new HttpError(503, "Authentication service is not configured.");
+  }
   const { salt, hash } = hashPassword(password);
   const id = crypto.randomUUID();
   must(await db.from("workspaces").upsert({ id: DEFAULT_WORKSPACE, name: "House of Mercy" }, { ignoreDuplicates: true }));
