@@ -30,3 +30,5 @@ CSV imports accept mapped available columns and retain import history in the bro
 ## Supabase backend (GitHub Pages deployment)
 
 Production runs as a static GitHub Pages frontend + Supabase (PostgreSQL + the `hom-api` Edge Function). See [docs-supabase-migration.md](docs-supabase-migration.md) for the schema, RLS, auth design, deployment steps and the SQLite migration script. `config.js` holds only the public Supabase URL and publishable key; the secret key must never be committed.
+
+For local Edge Function development, copy `.env.example` to `.env`, set `SUPABASE_SECRET_KEY` to the project's server-side key, and run `supabase functions serve hom-api --env-file .env`. Never commit `.env` or expose the secret key to the browser. Edge Functions import dependencies directly, so this project does not install `@supabase/server` in its Node package; the function uses `@supabase/supabase-js` via Deno's npm import. The function uses its own username/password session verification rather than Supabase Auth, so `SUPABASE_JWKS_URL` is included as configuration reference but is not currently consumed.
