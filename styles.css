@@ -59,3 +59,8 @@ body.nav-open{overflow:hidden}
 }
 @media(min-width:821px){.sidebar-close{display:none}}
 @media(prefers-reduced-motion:reduce){.sidebar,.nav-link{transition:none}}
+.calendar-event.cal-ev{cursor:pointer;background:#f2ebf8}
+.calendar-event.ev-published{background:#fff7dc;color:#946e00}
+.calendar-event.ev-cancelled{background:#f4f2f5;color:#7f7785;text-decoration:line-through}
+.calendar-event.ev-scheduled,.calendar-event.ev-ready-to-post{background:#edf6f0;color:#347653}
+.calendar-cell.drag-over,.calendar-list-row.drag-over{outline:2px dashed var(--gold)}

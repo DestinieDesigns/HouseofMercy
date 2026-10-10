@@ -9,7 +9,7 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("S
 const db = createClient(Deno.env.get("SUPABASE_URL")!, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 
 const ROLES = ["Admin", "Editor", "Contributor"];
-const COLLECTIONS = ["ideas", "reminders", "goals", "analytics", "hashtagSets", "imports"];
+const COLLECTIONS = ["ideas", "reminders", "goals", "analytics", "hashtagSets", "imports", "calendarEvents"];
 const KV_KEYS = ["settings", "lastGeneration"];
 const STAGES = ["Ideas", "Developing", "Review", "Approved", "Planned"];
 const COMMENT_TARGETS = ["ideas", "reminders", "goals"];
@@ -133,10 +133,50 @@ async function fullState(ws: string, user: Any, role: string) {
   return { workspace, me: { ...publicUser(user), role }, workspaces: await workspacesFor(user.id), data, members, comments, activity, invitations: [] };
 }
 
-const KIND_LABEL: Record<string, string> = { ideas: "content idea", reminders: "reminder", goals: "goal", hashtagSets: "hashtag set", analytics: "analytics record", imports: "import" };
+const KIND_LABEL: Record<string, string> = { ideas: "content idea", reminders: "reminder", goals: "goal", hashtagSets: "hashtag set", analytics: "analytics record", imports: "import", calendarEvents: "calendar event" };
 const titleOf = (it: Any) => `“${cleanText(it.title || it.name || "Untitled", 80)}”`;
 const isOwnerOrAssignee = (it: Any, user: Any) => it && (it.createdBy === user.id || it.assigneeId === user.id);
 const canWriteCollection = (role: string, c: string) => role === "Admin" || role === "Editor" || c === "ideas";
+
+const CAL_STATUSES = ["Idea", "Planned", "In Progress", "Ready to Post", "Scheduled", "Published", "Cancelled"];
+const CAL_FORMATS = ["", "Reel", "Video", "Image", "Carousel", "Story", "Text post"];
+const CAL_PLATFORMS = ["", "Instagram", "Facebook", "TikTok", "YouTube", "Threads"];
+const CAL_TEXT: Record<string, number> = { title: 140, description: 2000, pillar: 100, caption: 2200, hook: 300, onScreenText: 500, cta: 300, hashtags: 1000, notes: 2000, ideaId: 80 };
+const METRIC_KEYS = ["reach", "likes", "shares", "watchTime", "avgPlayTime", "views", "viewers", "interactions", "comments", "saves", "linkClicks", "replies", "follows"];
+const validDate = (d: unknown) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d ?? ""));
+  if (!m) return false;
+  const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return dt.getUTCFullYear() === +m[1] && dt.getUTCMonth() === +m[2] - 1 && dt.getUTCDate() === +m[3];
+};
+// Server-side validation so the API (not just the browser) rejects malformed calendar events and analytics records.
+function validateCollectionItem(collection: string, item: Any) {
+  if (collection === "calendarEvents") {
+    for (const [k, max] of Object.entries(CAL_TEXT)) {
+      if (item[k] === undefined || item[k] === null) { item[k] = ""; continue; }
+      if (typeof item[k] !== "string") throw new HttpError(400, `Invalid ${k}.`);
+      if (item[k].length > max) throw new HttpError(400, `${k} is too long.`);
+    }
+    item.title = item.title.trim();
+    if (!item.title) throw new HttpError(400, "A calendar event needs a title.");
+    if (!validDate(item.date)) throw new HttpError(400, "A calendar event needs a valid date (YYYY-MM-DD).");
+    item.time = item.time ?? "";
+    if (item.time !== "" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(item.time))) throw new HttpError(400, "Invalid time (use HH:MM).");
+    item.platform = item.platform ?? ""; item.format = item.format ?? ""; item.status = item.status || "Idea";
+    if (!CAL_PLATFORMS.includes(item.platform)) throw new HttpError(400, "Unknown platform.");
+    if (!CAL_FORMATS.includes(item.format)) throw new HttpError(400, "Unknown content format.");
+    if (!CAL_STATUSES.includes(item.status)) throw new HttpError(400, "Unknown calendar status.");
+  }
+  if (collection === "analytics") {
+    for (const k of METRIC_KEYS) {
+      const v = item[k];
+      if (v === undefined || v === null || v === "") { delete item[k]; continue; } // missing stays missing, never zero
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new HttpError(400, `${k} must be a non-negative number or left blank.`);
+    }
+    if (item.date !== undefined && item.date !== "" && !validDate(item.date)) throw new HttpError(400, "Invalid date published.");
+    for (const k of ["title", "platform", "externalId", "calendarEventId", "dateOriginal"]) if (item[k] !== undefined && (typeof item[k] !== "string" || item[k].length > 500)) throw new HttpError(400, `Invalid ${k}.`);
+  }
+}
 
 async function applyItemOps(ws: string, user: Any, role: string, collection: string, upsert: Any, remove: Any) {
   if (!COLLECTIONS.includes(collection)) throw new HttpError(400, "Unknown collection.");
@@ -165,6 +205,7 @@ async function applyItemOps(ws: string, user: Any, role: string, collection: str
     if (collection === "ideas" && item.status && !STAGES.includes(item.status)) throw new HttpError(400, "Unknown board stage.");
     if (prev) { item.createdBy = prev.createdBy; item.createdByName = prev.createdByName; } else { item.createdBy = user.id; item.createdByName = user.name; }
     item.updatedAt = now(); item.updatedBy = user.id;
+    validateCollectionItem(collection, item);
     if (JSON.stringify(item).length > 200000) throw new HttpError(413, "Item too large.");
     prepared.push({ item, prev });
   }

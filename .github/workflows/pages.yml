@@ -22,7 +22,7 @@ jobs:
         env:
           SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY || secrets.SUPABASE_PUBLISHABLE_KEY }}
         run: |
-          mkdir site && cp index.html app.js styles.css site/
+          mkdir site && cp index.html app.js insights-lib.js styles.css site/
           node scripts/generate-pages-config.js site/config.js
       - uses: actions/upload-pages-artifact@v3
         with: { path: site }
