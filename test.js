@@ -63,6 +63,24 @@ let base;
   await call('john', 'POST', W + '/items/ideas', { upsert: [{ ...st.data.ideas[0], status: 'Approved' }], remove: [] });
   st = (await call('admin', 'GET', W)).body; assert.ok(st.activity.some(a => a.userName === 'John Smith' && a.text.startsWith('approved')));
 
+  // Calendar events and analytics: persistence, validation and role enforcement.
+  const ev = { id: 'e1', title: 'Sunday Reel', date: '2026-10-11', time: '09:30', platform: 'Instagram', format: 'Reel', status: 'Planned' };
+  r = await call('john', 'POST', W + '/items/calendarEvents', { upsert: [ev], remove: [] }); assert.equal(r.status, 200);
+  st = (await call('sarah', 'GET', W)).body; assert.equal(st.data.calendarEvents.length, 1); assert.equal(st.data.calendarEvents[0].caption, '');
+  r = await call('john', 'POST', W + '/items/calendarEvents', { upsert: [{ ...ev, date: '2026-10-12', status: 'Published' }], remove: [] }); assert.equal(r.status, 200);
+  st = (await call('admin', 'GET', W)).body; assert.equal(st.data.calendarEvents[0].date, '2026-10-12'); assert.equal(st.data.calendarEvents.length, 1);
+  for (const bad of [{ title: '' }, { date: '2026-02-31' }, { date: 'soon' }, { time: '25:00' }, { status: 'Nope' }, { platform: 'MySpace' }, { format: 'Hologram' }])
+    assert.equal((await call('john', 'POST', W + '/items/calendarEvents', { upsert: [{ ...ev, ...bad }], remove: [] })).status, 400, JSON.stringify(bad));
+  assert.equal((await call('sarah', 'POST', W + '/items/calendarEvents', { upsert: [{ ...ev, id: 'e2' }], remove: [] })).status, 403);
+  assert.equal((await call('sarah', 'POST', W + '/items/calendarEvents', { upsert: [], remove: ['e1'] })).status, 403);
+  assert.equal((await call('sarah', 'POST', W + '/items/analytics', { upsert: [{ id: 'a1', title: 't', date: '2026-10-01' }], remove: [] })).status, 403);
+  r = await call('john', 'POST', W + '/items/analytics', { upsert: [{ id: 'a1', title: 'Post', date: '2026-10-12', reach: 10, views: '', calendarEventId: 'e1' }], remove: [] }); assert.equal(r.status, 200);
+  st = (await call('admin', 'GET', W)).body; assert.equal('views' in st.data.analytics[0], false); assert.equal(st.data.analytics[0].reach, 10);
+  for (const bad of [{ reach: 'abc' }, { reach: -1 }, { date: '2026-13-01' }])
+    assert.equal((await call('john', 'POST', W + '/items/analytics', { upsert: [{ id: 'a2', title: 'x', ...bad }], remove: [] })).status, 400, JSON.stringify(bad));
+  assert.equal((await call('john', 'POST', W + '/items/calendarEvents', { upsert: [], remove: ['e1'] })).status, 200);
+  assert.equal((await call('admin', 'GET', W)).body.data.calendarEvents.length, 0);
+
   const { DatabaseSync } = require('node:sqlite'), db = new DatabaseSync(process.env.HOM_DB);
   assert.equal(db.prepare("SELECT COUNT(*) c FROM users WHERE username='SarahJ' COLLATE NOCASE AND pw_hash='SarahPass2026'").get().c, 0);
   assert.equal(db.prepare('SELECT name FROM pragma_table_info(?)').all('users').some(c => c.name === 'email'), false);
