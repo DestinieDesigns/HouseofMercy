@@ -25,8 +25,18 @@ const cleanText = (s: unknown, max: number) => String(s ?? "").trim().slice(0, m
 const validUsername = (u: unknown) => /^[A-Za-z0-9_-]{3,30}$/.test(String(u ?? ""));
 const validPassword = (p: unknown) => typeof p === "string" && p.length >= 8 && p.length <= 200;
 const hashPassword = (pw: string, salt = crypto.randomBytes(16).toString("hex")) => ({ salt, hash: crypto.scryptSync(pw, salt, 64).toString("hex") });
+// Deno has no global Buffer; decode hex with plain Uint8Array (same bytes as Buffer.from(hex, "hex")).
+const hexToBytes = (h: string) => {
+  const s = String(h ?? ""), out = new Uint8Array(s.length >> 1);
+  for (let i = 0; i < out.length; i++) {
+    const v = parseInt(s.substr(i * 2, 2), 16);
+    if (Number.isNaN(v)) return out.subarray(0, i);
+    out[i] = v;
+  }
+  return out;
+};
 function verifyPassword(pw: string, salt: string, hash: string) {
-  const a = Buffer.from(hashPassword(pw, salt).hash, "hex"), b = Buffer.from(hash, "hex");
+  const a = hexToBytes(hashPassword(pw, salt).hash), b = hexToBytes(hash);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 const escLike = (s: string) => s.replace(/[%_\\]/g, "\\$&");
