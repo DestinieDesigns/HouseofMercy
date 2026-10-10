@@ -119,7 +119,15 @@
   }
 
   const clean = s => String(s ?? '').trim();
-  const dupKey = r => [clean(r.platform).toLowerCase(), clean(r.title).toLowerCase(), r.date].join('|');
+  const normText = s => String(s ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+  // Duplicate-matching key when the source has no unique ID: platform + title + Date published, all normalized
+  // (case, whitespace, date format). Titles alone are never enough and metrics are never compared for identity.
+  const dupKey = r => {
+    const d = r.date ? (parseDate(r.date).date || clean(r.date)) : '';
+    return [normText(r.platform), normText(r.title ?? r.content), d].join('|');
+  };
+  const idKeyOf = r => { const e = normText(r.externalId); return e ? 'id|' + e : ''; };
+  const changedMetrics = (existing, rec) => METRICS.some(f => typeof rec[f.key] === 'number' && existing[f.key] !== rec[f.key]);
 
   // Build an import plan from CSV text. Nothing is saved here.
   function planImport(text, existing, opts = {}) {
@@ -135,7 +143,7 @@
       return result;
     }
     const byId = new Map(), byKey = new Map();
-    (existing || []).forEach(e => { const n = normalizeRecord(e); if (n.externalId) byId.set(n.externalId, e); if (n.date && n.title) byKey.set(dupKey(n), e); });
+    (existing || []).forEach(e => { const n = normalizeRecord(e); if (idKeyOf(n)) byId.set(idKeyOf(n), e); if (n.date && n.title && !byKey.has(dupKey(n))) byKey.set(dupKey(n), e); });
     const seenInFile = new Set();
     rows.forEach((cells, i) => {
       const rowNo = i + 2, problems = [];
@@ -156,14 +164,57 @@
       const eid = clean(get('externalId'));
       if (eid) rec.externalId = eid;
       if (problems.length) { result.errors.push({ row: rowNo, message: `Row ${rowNo}: ${problems.join('; ')}.` }); return; }
-      let status = 'new', match = null;
-      if (eid && byId.has(eid)) { status = 'update'; match = byId.get(eid); }
-      else if (byKey.has(dupKey(rec))) { status = 'duplicate'; match = byKey.get(dupKey(rec)); }
-      else if (seenInFile.has(eid ? 'id|' + eid : dupKey(rec))) status = 'duplicate';
-      seenInFile.add(eid ? 'id|' + eid : dupKey(rec));
-      result.items.push({ row: rowNo, record: rec, status, matchId: match?.id });
+      const ik = idKeyOf(rec), key = dupKey(rec), seenKey = ik || key;
+      let status = 'new', match = null, inFile = false;
+      if (seenInFile.has(seenKey)) { status = 'duplicate'; inFile = true; }
+      else {
+        if (ik && byId.has(ik)) match = byId.get(ik);
+        else { const m = byKey.get(key); if (m && (!ik || !idKeyOf(normalizeRecord(m)))) match = m; }
+        if (match) status = changedMetrics(normalizeRecord(match), rec) || (ik && !idKeyOf(normalizeRecord(match))) ? 'update' : 'duplicate';
+      }
+      seenInFile.add(seenKey);
+      result.items.push({ row: rowNo, record: rec, status, matchId: match?.id, inFile });
     });
+    result.summary = summarizePlan(result);
     return result;
+  }
+
+  function summarizePlan(plan) {
+    const c = { rowsFound: plan.rowCount || 0, added: 0, updated: 0, duplicates: 0, invalid: plan.errors.length };
+    plan.items.forEach(i => { if (i.status === 'new') c.added++; else if (i.status === 'update') c.updated++; else c.duplicates++; });
+    return c;
+  }
+
+  // Apply a plan to the saved records without touching the DOM. Duplicates are never inserted. Provenance:
+  // new records remember the import that created them; updated ones remember that a later import changed them.
+  function applyPlan(plan, existing, importId, newId) {
+    let records = [...(existing || [])];
+    const addedIds = [], updatedIds = [], dates = [];
+    for (const it of plan.items) {
+      if (it.status === 'update' && it.matchId) {
+        records = records.map(x => x.id === it.matchId ? { ...mergeRecord(x, it.record), id: x.id, lastImportId: importId } : x);
+        updatedIds.push(it.matchId);
+      } else if (it.status === 'new') {
+        const id = newId();
+        records.unshift({ ...it.record, id, sourceImportId: importId });
+        addedIds.push(id);
+      } else continue;
+      dates.push(it.record.date);
+    }
+    const s = summarizePlan(plan);
+    return { records, addedIds, updatedIds, dates: dates.sort(), summary: s, allDuplicates: s.added === 0 && s.updated === 0 && s.duplicates > 0 };
+  }
+
+  const summaryText = s => s.added === 0 && s.updated === 0 && s.duplicates > 0 && !s.invalid
+    ? `Everything in this file is already imported: ${s.rowsFound} row${s.rowsFound === 1 ? '' : 's'} found, ${s.duplicates} skipped as duplicates. Nothing was changed.`
+    : `${s.rowsFound} row${s.rowsFound === 1 ? '' : 's'} found · ${s.added} added · ${s.duplicates} skipped as duplicates · ${s.updated} updated with new metrics · ${s.invalid} invalid rejected`;
+
+  // Which records an import may safely delete: only those it created that nobody (a later import or a person)
+  // has since changed. Imports saved before provenance tracking have no addedIds and can delete nothing.
+  function deletableFromImport(imp, records) {
+    const ids = new Set(imp?.addedIds || []), safe = [], kept = [];
+    (records || []).forEach(r => { if (!ids.has(r.id)) return; (r.sourceImportId === imp.id && !r.lastImportId && !r.editedManually ? safe : kept).push(r); });
+    return { safe, kept, missing: ids.size - safe.length - kept.length };
   }
 
   // Legacy imports used different field names (content/engagement/time) and string values.
@@ -286,5 +337,5 @@
     return ok.sort((a, b) => b.score / b.count - a.score / a.count).slice(0, 6).map(x => ({ ...x, range: `${h12(x.hour)}–${h12(x.hour + 2)}` }));
   }
 
-  return { FIELDS, METRICS, LABEL, NON_ADDITIVE, PLATFORMS, isAdditive, parseCSV, mapHeaders, parseNumber, parseDate, planImport, normalizeRecord, norm, mergeRecord, filterRecords, summarize, rank, byDate, compareRanges, analyze, bestTimes, confidence, dupKey };
+  return { FIELDS, METRICS, LABEL, NON_ADDITIVE, PLATFORMS, isAdditive, parseCSV, mapHeaders, parseNumber, parseDate, planImport, normalizeRecord, norm, mergeRecord, filterRecords, summarize, rank, byDate, compareRanges, analyze, bestTimes, confidence, dupKey, normText, summarizePlan, applyPlan, summaryText, deletableFromImport };
 });

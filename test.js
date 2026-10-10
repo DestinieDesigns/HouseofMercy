@@ -76,6 +76,17 @@ let base;
   assert.equal((await call('sarah', 'POST', W + '/items/analytics', { upsert: [{ id: 'a1', title: 't', date: '2026-10-01' }], remove: [] })).status, 403);
   r = await call('john', 'POST', W + '/items/analytics', { upsert: [{ id: 'a1', title: 'Post', date: '2026-10-12', reach: 10, views: '', calendarEventId: 'e1' }], remove: [] }); assert.equal(r.status, 200);
   st = (await call('admin', 'GET', W)).body; assert.equal('views' in st.data.analytics[0], false); assert.equal(st.data.analytics[0].reach, 10);
+  // Duplicate protection and deletion permissions at the API.
+  assert.equal((await call('john', 'POST', W + '/items/analytics', { upsert: [{ id: 'a9', title: ' post ', date: '2026-10-12', reach: 1 }], remove: [] })).status, 409);
+  assert.equal((await call('john', 'POST', W + '/items/analytics', { upsert: [{ id: 'b1', title: 'Dup', date: '2026-10-13' }, { id: 'b2', title: 'DUP', date: '2026-10-13' }], remove: [] })).status, 409);
+  assert.equal((await call('admin', 'GET', W)).body.data.analytics.length, 1, 'rejected batch saved nothing');
+  assert.equal((await call('john', 'POST', W + '/items/analytics', { upsert: [{ id: 'a1', title: 'Post', date: '2026-10-12', reach: 11 }], remove: [] })).status, 200);
+  assert.equal((await call('sarah', 'POST', W + '/items/analytics', { upsert: [], remove: ['a1'] })).status, 403);
+  assert.equal((await call('admin', 'GET', W)).body.data.analytics.length, 1);
+  assert.equal((await call('john', 'POST', W + '/items/analytics', { upsert: [], remove: ['a1'] })).status, 200);
+  assert.equal((await call('admin', 'GET', W)).body.data.analytics.length, 0);
+  assert.equal((await call('john', 'POST', W + '/items/analytics', { upsert: [{ id: 'a1', title: 'Post', date: '2026-10-12', reach: 10 }], remove: [] })).status, 200, 'key is free again after deletion');
+  assert.equal((await call('john', 'POST', W + '/items/analytics', { upsert: [{ id: 'a7', title: 'POST', date: '2026-10-12' }], remove: [] })).status, 409);
   for (const bad of [{ reach: 'abc' }, { reach: -1 }, { date: '2026-13-01' }])
     assert.equal((await call('john', 'POST', W + '/items/analytics', { upsert: [{ id: 'a2', title: 'x', ...bad }], remove: [] })).status, 400, JSON.stringify(bad));
   assert.equal((await call('john', 'POST', W + '/items/calendarEvents', { upsert: [], remove: ['e1'] })).status, 200);

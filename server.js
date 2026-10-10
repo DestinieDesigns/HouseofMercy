@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS items(workspace_id TEXT NOT NULL REFERENCES workspace
 CREATE TABLE IF NOT EXISTS kv(workspace_id TEXT NOT NULL REFERENCES workspaces(id), key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(workspace_id, key));
 CREATE TABLE IF NOT EXISTS comments(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), target_kind TEXT NOT NULL, target_id TEXT NOT NULL, parent_id TEXT, user_id TEXT NOT NULL, user_name TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL REFERENCES workspaces(id), user_id TEXT, user_name TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_items_analytics_key ON items(workspace_id, json_extract(data,'$.dedupeKey')) WHERE collection='analytics' AND json_extract(data,'$.dedupeKey') IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_items_ws ON items(workspace_id, collection);
 CREATE INDEX IF NOT EXISTS idx_comments_ws ON comments(workspace_id, target_kind, target_id);
 CREATE INDEX IF NOT EXISTS idx_activity_ws ON activity(workspace_id, id);
@@ -183,6 +184,14 @@ function validDate(d) {
   const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
   return dt.getUTCFullYear() === +m[1] && dt.getUTCMonth() === +m[2] - 1 && dt.getUTCDate() === +m[3];
 }
+// Duplicate identity for analytics records: a stable external ID when the source gives one, otherwise
+// platform + title + Date published, normalized. Mirrors dupKey/idKeyOf in insights-lib.js.
+const normText = v => String(v ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+function dedupeKeyOf(item) {
+  if (!item.title || !item.date) return null;
+  const ext = normText(item.externalId);
+  return ext ? `id|${normText(item.platform)}|${ext}` : `k|${normText(item.platform)}|${normText(item.title)}|${item.date}`;
+}
 // Server-side validation so the API (not just the browser) rejects malformed calendar events and analytics records.
 function validateCollectionItem(collection, item) {
   if (collection === 'calendarEvents') {
@@ -208,7 +217,7 @@ function validateCollectionItem(collection, item) {
       if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new HttpError(400, `${k} must be a non-negative number or left blank.`);
     }
     if (item.date !== undefined && item.date !== '' && !validDate(item.date)) throw new HttpError(400, 'Invalid date published.');
-    for (const k of ['title', 'platform', 'externalId', 'calendarEventId', 'dateOriginal']) if (item[k] !== undefined && (typeof item[k] !== 'string' || item[k].length > 500)) throw new HttpError(400, `Invalid ${k}.`);
+    for (const k of ['title', 'platform', 'externalId', 'calendarEventId', 'dateOriginal', 'sourceImportId', 'lastImportId']) if (item[k] !== undefined && (typeof item[k] !== 'string' || item[k].length > 500)) throw new HttpError(400, `Invalid ${k}.`);
   }
 }
 
@@ -221,6 +230,15 @@ function applyItemOps(workspaceId, user, role, collection, upsert, remove) {
   const put = db.prepare('INSERT INTO items(workspace_id,collection,id,data,seq) VALUES(?,?,?,?,?) ON CONFLICT(workspace_id,collection,id) DO UPDATE SET data=excluded.data');
   const seqRow = db.prepare('SELECT COALESCE(MAX(seq),0)+1 s FROM items WHERE workspace_id=?');
   let created = 0, quiet = collection === 'analytics';
+  // Duplicate protection for analytics: never two records with the same identity in a workspace.
+  const claimed = new Map();
+  if (quiet) {
+    for (const r of db.prepare('SELECT id,data FROM items WHERE workspace_id=? AND collection=?').all(workspaceId, collection)) {
+      const d = JSON.parse(r.data), k = dedupeKeyOf(d);
+      if (k) claimed.set(k, r.id);
+    }
+    for (const id of remove) for (const [k, v] of [...claimed]) if (v === String(id)) claimed.delete(k);
+  }
   tx(() => {
     for (const raw of upsert) {
       if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || raw.id.length > 80) throw new HttpError(400, 'Invalid item.');
@@ -243,6 +261,15 @@ function applyItemOps(workspaceId, user, role, collection, upsert, remove) {
       if (prev) { item.createdBy = prev.createdBy; item.createdByName = prev.createdByName; } else { item.createdBy = user.id; item.createdByName = user.name; }
       item.updatedAt = now(); item.updatedBy = user.id;
       validateCollectionItem(collection, item);
+      if (quiet) {
+        delete item.dedupeKey;
+        const k = dedupeKeyOf(item);
+        if (k) {
+          for (const [ck, cid] of [...claimed]) if (cid === item.id) claimed.delete(ck);
+          if (claimed.has(k)) throw new HttpError(409, 'A record for this post already exists (same platform, title and Date published, or same ID).');
+          claimed.set(k, item.id); item.dedupeKey = k;
+        }
+      }
       if (JSON.stringify(item).length > 200000) throw new HttpError(413, 'Item too large.');
       put.run(workspaceId, collection, item.id, JSON.stringify(item), prev ? 0 : seqRow.get(workspaceId).s);
       if (prev) {
@@ -472,6 +499,7 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     if (e instanceof HttpError) return send(res, e.status, { error: e.message });
     console.error(e);
+    if (/UNIQUE constraint failed|uq_items_analytics_key/i.test(String(e && e.message))) return send(res, 409, { error: 'A record for this post already exists.' });
     if (/database|SQLITE|sqlite/i.test(String(e && (e.code || e.message)))) return send(res, 503, { error: 'The House of Mercy authentication service is temporarily unavailable.' });
     send(res, 500, { error: 'Something went wrong while signing you in. Please try again.' });
   }
