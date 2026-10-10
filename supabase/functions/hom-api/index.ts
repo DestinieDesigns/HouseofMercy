@@ -3,6 +3,7 @@
 // The service-role key lives only in the function environment; the browser never receives it.
 import { createClient } from "npm:@supabase/supabase-js@2";
 import crypto from "node:crypto";
+import { Buffer } from "node:buffer";
 
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SECRET_KEY") ?? "";
 const db = createClient(Deno.env.get("SUPABASE_URL")!, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
