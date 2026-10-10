@@ -136,6 +136,13 @@ async function fullState(ws: string, user: Any, role: string) {
 const KIND_LABEL: Record<string, string> = { ideas: "content idea", reminders: "reminder", goals: "goal", hashtagSets: "hashtag set", analytics: "analytics record", imports: "import", calendarEvents: "calendar event" };
 const titleOf = (it: Any) => `“${cleanText(it.title || it.name || "Untitled", 80)}”`;
 const isOwnerOrAssignee = (it: Any, user: Any) => it && (it.createdBy === user.id || it.assigneeId === user.id);
+const normText = (v: unknown) => String(v ?? "").normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+// Duplicate identity for analytics: external ID when provided, else platform + title + Date published (normalized).
+function dedupeKeyOf(item: Any): string | null {
+  if (!item.title || !item.date) return null;
+  const ext = normText(item.externalId);
+  return ext ? `id|${normText(item.platform)}|${ext}` : `k|${normText(item.platform)}|${normText(item.title)}|${item.date}`;
+}
 const canWriteCollection = (role: string, c: string) => role === "Admin" || role === "Editor" || c === "ideas";
 
 const CAL_STATUSES = ["Idea", "Planned", "In Progress", "Ready to Post", "Scheduled", "Published", "Cancelled"];
@@ -174,7 +181,7 @@ function validateCollectionItem(collection: string, item: Any) {
       if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new HttpError(400, `${k} must be a non-negative number or left blank.`);
     }
     if (item.date !== undefined && item.date !== "" && !validDate(item.date)) throw new HttpError(400, "Invalid date published.");
-    for (const k of ["title", "platform", "externalId", "calendarEventId", "dateOriginal"]) if (item[k] !== undefined && (typeof item[k] !== "string" || item[k].length > 500)) throw new HttpError(400, `Invalid ${k}.`);
+    for (const k of ["title", "platform", "externalId", "calendarEventId", "dateOriginal", "sourceImportId", "lastImportId"]) if (item[k] !== undefined && (typeof item[k] !== "string" || item[k].length > 500)) throw new HttpError(400, `Invalid ${k}.`);
   }
 }
 
@@ -185,6 +192,11 @@ async function applyItemOps(ws: string, user: Any, role: string, collection: str
   const members = new Map((must(await db.from("memberships").select("app_users(id,name)").eq("workspace_id", ws)) as Any[]).map((m) => [m.app_users.id, m.app_users.name]));
   const quiet = collection === "analytics";
   let created = 0;
+  const claimed = new Map<string, string>();
+  if (quiet) {
+    for (const r of must(await db.from("items").select("id,data").eq("workspace_id", ws).eq("collection", collection)) as Any[]) { const k = dedupeKeyOf(r.data); if (k) claimed.set(k, r.id); }
+    for (const rid of remove) for (const [k, v] of [...claimed]) if (v === String(rid)) claimed.delete(k);
+  }
   const prepared: { item: Any; prev: Any }[] = [];
   // Validate everything first so a bad item rejects the whole batch (the SQLite version used a transaction).
   for (const raw of upsert) {
@@ -206,6 +218,15 @@ async function applyItemOps(ws: string, user: Any, role: string, collection: str
     if (prev) { item.createdBy = prev.createdBy; item.createdByName = prev.createdByName; } else { item.createdBy = user.id; item.createdByName = user.name; }
     item.updatedAt = now(); item.updatedBy = user.id;
     validateCollectionItem(collection, item);
+    if (quiet) {
+      delete item.dedupeKey;
+      const k = dedupeKeyOf(item);
+      if (k) {
+        for (const [ck, cid] of [...claimed]) if (cid === item.id) claimed.delete(ck);
+        if (claimed.has(k)) throw new HttpError(409, "A record for this post already exists (same platform, title and Date published, or same ID).");
+        claimed.set(k, item.id); item.dedupeKey = k;
+      }
+    }
     if (JSON.stringify(item).length > 200000) throw new HttpError(413, "Item too large.");
     prepared.push({ item, prev });
   }
@@ -423,6 +444,7 @@ Deno.serve(async (req) => {
     return await route(req, new URL(req.url));
   } catch (e) {
     if (e instanceof HttpError) return send(req, e.status, { error: e.message });
+    if ((e as Any)?.code === "23505") return send(req, 409, { error: "A record for this post already exists." });
     console.error(e);
     return send(req, 500, { error: "Something went wrong while signing you in. Please try again." });
   }
