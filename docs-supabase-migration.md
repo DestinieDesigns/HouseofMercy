@@ -24,9 +24,9 @@ GitHub Pages only serves static files, so `POST /api/login` was rejected. The fr
 
 ## Deploy
 1. `supabase link --project-ref <ref>`; `supabase db push`.
-2. `supabase secrets set HOM_ADMIN_INITIAL_PASSWORD=<temporary password>` (never commit; the first login creates `HOMMediaAdmin` with forced change). Optionally `HOM_ALLOWED_ORIGINS=https://<user>.github.io`.
+2. `supabase secrets set HOM_ADMIN_INITIAL_PASSWORD=<temporary password>` (never commit; the first login creates `HOMMediaAdmin` with forced change). CORS defaults to `https://destiniedesigns.github.io`; set `HOM_ALLOWED_ORIGINS` only if additional trusted origins are required.
 3. `supabase functions deploy hom-api --no-verify-jwt`.
-4. In GitHub → Settings → Variables set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`; the Pages workflow writes `config.js`. Remove `HOM_ADMIN_INITIAL_PASSWORD` afterwards.
+4. Add `SUPABASE_PUBLISHABLE_KEY` in GitHub → Settings → Secrets and variables → Actions → Variables (or Secrets), or under Settings → Environments → `github-pages` → Variables (or Secrets). Use the project's publishable key, never a secret/service-role key. The Pages workflow fixes the URL to this project, validates the key, runs tests, and fails rather than publishing if the key is missing or privileged.
 
 ## Data migration
 `node scripts/migrate-sqlite-to-supabase.js` (dry-run) then `--apply` with `SUPABASE_URL`/`SUPABASE_SECRET_KEY` in your shell only. Migrates workspaces, users, memberships, items, kv, comments, activity. Hashes are scrypt, so they remain valid; use `--require-reset` to skip them and force Admin re-provisioning. Sessions are not migrated.

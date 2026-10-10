@@ -3,18 +3,19 @@
 // The service-role key lives only in the function environment; the browser never receives it.
 import { createClient } from "npm:@supabase/supabase-js@2";
 import crypto from "node:crypto";
+import { Buffer } from "node:buffer";
 
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SECRET_KEY") ?? "";
 const db = createClient(Deno.env.get("SUPABASE_URL")!, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 
 const ROLES = ["Admin", "Editor", "Contributor"];
-const COLLECTIONS = ["ideas", "reminders", "goals", "analytics", "hashtagSets", "imports"];
+const COLLECTIONS = ["ideas", "reminders", "goals", "analytics", "hashtagSets", "imports", "calendarEvents"];
 const KV_KEYS = ["settings", "lastGeneration"];
 const STAGES = ["Ideas", "Developing", "Review", "Approved", "Planned"];
 const COMMENT_TARGETS = ["ideas", "reminders", "goals"];
 const SESSION_HOURS = 12;
 const DEFAULT_WORKSPACE = "house-of-mercy";
-const ALLOWED = (Deno.env.get("HOM_ALLOWED_ORIGINS") ?? "*").split(",").map((s) => s.trim()).filter(Boolean);
+const ALLOWED = (Deno.env.get("HOM_ALLOWED_ORIGINS") ?? "https://destiniedesigns.github.io").split(",").map((s) => s.trim()).filter(Boolean);
 
 class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 // deno-lint-ignore no-explicit-any
@@ -25,8 +26,18 @@ const cleanText = (s: unknown, max: number) => String(s ?? "").trim().slice(0, m
 const validUsername = (u: unknown) => /^[A-Za-z0-9_-]{3,30}$/.test(String(u ?? ""));
 const validPassword = (p: unknown) => typeof p === "string" && p.length >= 8 && p.length <= 200;
 const hashPassword = (pw: string, salt = crypto.randomBytes(16).toString("hex")) => ({ salt, hash: crypto.scryptSync(pw, salt, 64).toString("hex") });
+// Deno has no global Buffer; decode hex with plain Uint8Array (same bytes as Buffer.from(hex, "hex")).
+const hexToBytes = (h: string) => {
+  const s = String(h ?? ""), out = new Uint8Array(s.length >> 1);
+  for (let i = 0; i < out.length; i++) {
+    const v = parseInt(s.substr(i * 2, 2), 16);
+    if (Number.isNaN(v)) return out.subarray(0, i);
+    out[i] = v;
+  }
+  return out;
+};
 function verifyPassword(pw: string, salt: string, hash: string) {
-  const a = Buffer.from(hashPassword(pw, salt).hash, "hex"), b = Buffer.from(hash, "hex");
+  const a = hexToBytes(hashPassword(pw, salt).hash), b = hexToBytes(hash);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 const escLike = (s: string) => s.replace(/[%_\\]/g, "\\$&");
@@ -34,12 +45,13 @@ const must = <T>(r: { data: T; error: Any }): T => { if (r.error) throw r.error;
 
 function corsHeaders(req: Request) {
   const origin = req.headers.get("origin") ?? "";
-  const allow = ALLOWED.includes("*") ? "*" : ALLOWED.includes(origin) ? origin : ALLOWED[0];
-  return {
-    "Access-Control-Allow-Origin": allow, "Vary": "Origin",
+  const headers: Record<string, string> = {
+    "Vary": "Origin",
     "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-hom-session",
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   };
+  if (ALLOWED.includes(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
 }
 const send = (req: Request, status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders(req), "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
@@ -62,7 +74,10 @@ async function bootstrapAdmin() {
   const { count } = await db.from("app_users").select("id", { count: "exact", head: true });
   if (count) return;
   const password = Deno.env.get("HOM_ADMIN_INITIAL_PASSWORD");
-  if (!password || !validPassword(password)) throw new HttpError(503, "Authentication service is not configured.");
+  if (!password || !validPassword(password)) {
+    console.error("Cannot provision HOMMediaAdmin: set the HOM_ADMIN_INITIAL_PASSWORD secret (8-200 characters) on the hom-api function.");
+    throw new HttpError(503, "Authentication service is not configured.");
+  }
   const { salt, hash } = hashPassword(password);
   const id = crypto.randomUUID();
   must(await db.from("workspaces").upsert({ id: DEFAULT_WORKSPACE, name: "House of Mercy" }, { ignoreDuplicates: true }));
@@ -118,10 +133,50 @@ async function fullState(ws: string, user: Any, role: string) {
   return { workspace, me: { ...publicUser(user), role }, workspaces: await workspacesFor(user.id), data, members, comments, activity, invitations: [] };
 }
 
-const KIND_LABEL: Record<string, string> = { ideas: "content idea", reminders: "reminder", goals: "goal", hashtagSets: "hashtag set", analytics: "analytics record", imports: "import" };
+const KIND_LABEL: Record<string, string> = { ideas: "content idea", reminders: "reminder", goals: "goal", hashtagSets: "hashtag set", analytics: "analytics record", imports: "import", calendarEvents: "calendar event" };
 const titleOf = (it: Any) => `“${cleanText(it.title || it.name || "Untitled", 80)}”`;
 const isOwnerOrAssignee = (it: Any, user: Any) => it && (it.createdBy === user.id || it.assigneeId === user.id);
 const canWriteCollection = (role: string, c: string) => role === "Admin" || role === "Editor" || c === "ideas";
+
+const CAL_STATUSES = ["Idea", "Planned", "In Progress", "Ready to Post", "Scheduled", "Published", "Cancelled"];
+const CAL_FORMATS = ["", "Reel", "Video", "Image", "Carousel", "Story", "Text post"];
+const CAL_PLATFORMS = ["", "Instagram", "Facebook", "TikTok", "YouTube", "Threads"];
+const CAL_TEXT: Record<string, number> = { title: 140, description: 2000, pillar: 100, caption: 2200, hook: 300, onScreenText: 500, cta: 300, hashtags: 1000, notes: 2000, ideaId: 80 };
+const METRIC_KEYS = ["reach", "likes", "shares", "watchTime", "avgPlayTime", "views", "viewers", "interactions", "comments", "saves", "linkClicks", "replies", "follows"];
+const validDate = (d: unknown) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d ?? ""));
+  if (!m) return false;
+  const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return dt.getUTCFullYear() === +m[1] && dt.getUTCMonth() === +m[2] - 1 && dt.getUTCDate() === +m[3];
+};
+// Server-side validation so the API (not just the browser) rejects malformed calendar events and analytics records.
+function validateCollectionItem(collection: string, item: Any) {
+  if (collection === "calendarEvents") {
+    for (const [k, max] of Object.entries(CAL_TEXT)) {
+      if (item[k] === undefined || item[k] === null) { item[k] = ""; continue; }
+      if (typeof item[k] !== "string") throw new HttpError(400, `Invalid ${k}.`);
+      if (item[k].length > max) throw new HttpError(400, `${k} is too long.`);
+    }
+    item.title = item.title.trim();
+    if (!item.title) throw new HttpError(400, "A calendar event needs a title.");
+    if (!validDate(item.date)) throw new HttpError(400, "A calendar event needs a valid date (YYYY-MM-DD).");
+    item.time = item.time ?? "";
+    if (item.time !== "" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(item.time))) throw new HttpError(400, "Invalid time (use HH:MM).");
+    item.platform = item.platform ?? ""; item.format = item.format ?? ""; item.status = item.status || "Idea";
+    if (!CAL_PLATFORMS.includes(item.platform)) throw new HttpError(400, "Unknown platform.");
+    if (!CAL_FORMATS.includes(item.format)) throw new HttpError(400, "Unknown content format.");
+    if (!CAL_STATUSES.includes(item.status)) throw new HttpError(400, "Unknown calendar status.");
+  }
+  if (collection === "analytics") {
+    for (const k of METRIC_KEYS) {
+      const v = item[k];
+      if (v === undefined || v === null || v === "") { delete item[k]; continue; } // missing stays missing, never zero
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new HttpError(400, `${k} must be a non-negative number or left blank.`);
+    }
+    if (item.date !== undefined && item.date !== "" && !validDate(item.date)) throw new HttpError(400, "Invalid date published.");
+    for (const k of ["title", "platform", "externalId", "calendarEventId", "dateOriginal"]) if (item[k] !== undefined && (typeof item[k] !== "string" || item[k].length > 500)) throw new HttpError(400, `Invalid ${k}.`);
+  }
+}
 
 async function applyItemOps(ws: string, user: Any, role: string, collection: string, upsert: Any, remove: Any) {
   if (!COLLECTIONS.includes(collection)) throw new HttpError(400, "Unknown collection.");
@@ -150,6 +205,7 @@ async function applyItemOps(ws: string, user: Any, role: string, collection: str
     if (collection === "ideas" && item.status && !STAGES.includes(item.status)) throw new HttpError(400, "Unknown board stage.");
     if (prev) { item.createdBy = prev.createdBy; item.createdByName = prev.createdByName; } else { item.createdBy = user.id; item.createdByName = user.name; }
     item.updatedAt = now(); item.updatedBy = user.id;
+    validateCollectionItem(collection, item);
     if (JSON.stringify(item).length > 200000) throw new HttpError(413, "Item too large.");
     prepared.push({ item, prev });
   }
@@ -363,6 +419,7 @@ async function route(req: Request, url: URL): Promise<Response> {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
   try {
+    if (!SERVICE_KEY || !Deno.env.get("SUPABASE_URL")) throw new HttpError(503, "The House of Mercy backend is missing its server-side Supabase credentials.");
     return await route(req, new URL(req.url));
   } catch (e) {
     if (e instanceof HttpError) return send(req, e.status, { error: e.message });
