@@ -151,7 +151,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .calendar-list-row .section-subtitle{display:block}
 .calendar-list-row .row-date{white-space:normal}
 .data-card{padding:20px}
-.data-card h3,.analytics-empty h3{font-size:20px;line-height:1.4;overflow-wrap:anywhere}
+.data-card h3,.analytics-empty h3{font-size:clamp(22px,2vw,26px);line-height:1.35;overflow-wrap:anywhere}
+.brand-copy strong,.user-profile strong{font-size:14px}
+.user-profile small{font-size:14px;color:#514a58}
+.calendar-cell button[data-action="new-event"][aria-label]{min-width:44px;min-height:44px;padding:8px;font-size:16px!important}
 .data-card strong{font-size:18px;line-height:1.4;overflow-wrap:anywhere}
 .analytics-empty{max-width:720px;padding:clamp(22px,4vw,40px)}
 .chart-placeholder{height:180px;gap:8px;overflow-x:auto}
